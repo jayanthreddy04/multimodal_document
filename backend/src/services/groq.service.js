@@ -1,6 +1,13 @@
 import { getGroqClient, GROQ_MODEL } from '../config/groq.js';
+import {
+  getTraceArgs,
+  makeTraceable,
+  traceMessagesInput,
+  traceOutput,
+  traceTextInput,
+} from '../utils/langsmith.js';
 
-const chat = async (messages, options = {}) => {
+const chat = makeTraceable(async (messages, options = {}) => {
   const client = getGroqClient();
   const response = await client.chat.completions.create({
     model: options.model || GROQ_MODEL,
@@ -10,9 +17,23 @@ const chat = async (messages, options = {}) => {
     response_format: options.jsonMode ? { type: 'json_object' } : undefined,
   });
   return response.choices[0]?.message?.content || '';
-};
+}, {
+  name: 'groq.chat.completions',
+  run_type: 'llm',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceMessagesInput(args[0], args[1]);
+  },
+  processOutputs: ({ outputs }) => traceOutput(outputs),
+  getInvocationParams: (_messages, options = {}) => ({
+    model: options.model || GROQ_MODEL,
+    provider: 'groq',
+    temperature: options.temperature ?? 0.3,
+    max_tokens: options.maxTokens || 4096,
+  }),
+});
 
-export const generateDocumentInsights = async (text, filename, category) => {
+export const generateDocumentInsights = makeTraceable(async (text, filename, category) => {
   const truncated = text.slice(0, 12000);
   const prompt = `Analyze this document and return JSON only with these fields:
 - summary: string (2-3 paragraphs)
@@ -53,9 +74,29 @@ ${truncated}`;
       tables: [],
     };
   }
-};
+}, {
+  name: 'generateDocumentInsights',
+  run_type: 'chain',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceTextInput(args[0], {
+      filename: args[1],
+      category: args[2],
+    });
+  },
+  processOutputs: (outputs) => ({
+    summary: outputs.summary,
+    keyInsightCount: outputs.keyInsights?.length || 0,
+    actionItemCount: outputs.actionItems?.length || 0,
+    entityCount: outputs.entities?.length || 0,
+    sentiment: outputs.sentiment,
+    confidence: outputs.confidence,
+    tags: outputs.tags,
+    tableCount: outputs.tables?.length || 0,
+  }),
+});
 
-export const answerQuestion = async (question, context, chatHistory = []) => {
+export const answerQuestion = makeTraceable(async (question, context, chatHistory = []) => {
   const truncatedContext = context.slice(0, 10000);
   const historyMessages = chatHistory.slice(-6).map((m) => ({
     role: m.role,
@@ -73,9 +114,20 @@ export const answerQuestion = async (question, context, chatHistory = []) => {
       content: `Document Context:\n${truncatedContext}\n\nQuestion: ${question}`,
     },
   ]);
-};
+}, {
+  name: 'answerQuestion',
+  run_type: 'chain',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceTextInput(args[1], {
+      question: args[0],
+      chatHistoryCount: args[2]?.length || 0,
+    });
+  },
+  processOutputs: ({ outputs }) => traceOutput(outputs, 'answer'),
+});
 
-export const generateSearchSummary = async (query, results) => {
+export const generateSearchSummary = makeTraceable(async (query, results) => {
   const context = results
     .map((r, i) => `[${i + 1}] ${r.filename}: ${r.snippet}`)
     .join('\n');
@@ -90,9 +142,26 @@ export const generateSearchSummary = async (query, results) => {
       content: `Query: ${query}\n\nResults:\n${context}`,
     },
   ], { maxTokens: 300 });
-};
+}, {
+  name: 'generateSearchSummary',
+  run_type: 'chain',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return {
+      query: args[0],
+      resultCount: args[1]?.length || 0,
+      results: (args[1] || []).map((result) => ({
+        filename: result.filename,
+        category: result.category,
+        score: result.score,
+        snippet: traceOutput(result.snippet, 'snippet').snippet,
+      })),
+    };
+  },
+  processOutputs: ({ outputs }) => traceOutput(outputs, 'summary'),
+});
 
-export const explainChartOrTable = async (content, type = 'table') => {
+export const explainChartOrTable = makeTraceable(async (content, type = 'table') => {
   return chat([
     {
       role: 'system',
@@ -100,9 +169,17 @@ export const explainChartOrTable = async (content, type = 'table') => {
     },
     { role: 'user', content: content.slice(0, 4000) },
   ], { maxTokens: 800 });
-};
+}, {
+  name: 'explainChartOrTable',
+  run_type: 'chain',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceTextInput(args[0], { type: args[1] || 'table' });
+  },
+  processOutputs: ({ outputs }) => traceOutput(outputs, 'explanation'),
+});
 
-export const generateReport = async (document) => {
+export const generateReport = makeTraceable(async (document) => {
   const { insights, extractedText, originalName, category } = document;
   return chat([
     {
@@ -121,4 +198,19 @@ Sentiment: ${insights?.sentiment}
 Sample Content: ${(extractedText || '').slice(0, 2000)}`,
     },
   ], { maxTokens: 2000 });
-};
+}, {
+  name: 'generateReport',
+  run_type: 'chain',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    const document = args[0] || {};
+    return {
+      documentId: document._id?.toString(),
+      filename: document.originalName,
+      category: document.category,
+      hasInsights: Boolean(document.insights),
+      extractedTextLength: document.extractedText?.length || 0,
+    };
+  },
+  processOutputs: ({ outputs }) => traceOutput(outputs, 'report'),
+});

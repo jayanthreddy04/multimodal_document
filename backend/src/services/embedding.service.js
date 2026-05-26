@@ -1,5 +1,6 @@
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters';
 import { getGroqClient } from '../config/groq.js';
+import { getTraceArgs, makeTraceable, traceTextInput } from '../utils/langsmith.js';
 
 const EMBEDDING_DIM = parseInt(process.env.PINECONE_DIMENSION, 10) || 768;
 
@@ -25,7 +26,7 @@ const simpleHashEmbed = (text) => {
   return vector.map((v) => v / magnitude);
 };
 
-export const generateEmbedding = async (text) => {
+export const generateEmbedding = makeTraceable(async (text) => {
   try {
     const client = getGroqClient();
     const response = await client.chat.completions.create({
@@ -55,15 +56,42 @@ export const generateEmbedding = async (text) => {
   }
 
   return simpleHashEmbed(text);
-};
+}, {
+  name: 'generateEmbedding',
+  run_type: 'llm',
+  processInputs: ({ input }) => traceTextInput(input),
+  processOutputs: ({ outputs }) => ({
+    dimensions: outputs?.length || 0,
+    sample: outputs?.slice(0, 5) || [],
+  }),
+  getInvocationParams: () => ({
+    model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
+    provider: 'groq',
+    embedding_dimension: EMBEDDING_DIM,
+  }),
+});
 
-export const chunkDocument = async (text, chunkSize = 800, overlap = 150) => {
+export const chunkDocument = makeTraceable(async (text, chunkSize = 800, overlap = 150) => {
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize,
     chunkOverlap: overlap,
   });
   return splitter.splitText(text);
-};
+}, {
+  name: 'chunkDocument',
+  run_type: 'tool',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceTextInput(args[0], {
+      chunkSize: args[1] || 800,
+      overlap: args[2] || 150,
+    });
+  },
+  processOutputs: ({ outputs }) => ({
+    chunkCount: outputs?.length || 0,
+    firstChunkLength: outputs?.[0]?.length || 0,
+  }),
+});
 
 export const computeSimilarity = (vecA, vecB) => {
   let dot = 0;

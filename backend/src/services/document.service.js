@@ -6,11 +6,12 @@ import { chunkDocument } from './embedding.service.js';
 import { upsertDocumentChunks, findSimilarDocuments } from './pinecone.service.js';
 import { categorizeDocument } from '../utils/fileHelpers.js';
 import { ApiError } from '../utils/ApiError.js';
+import { getTraceArgs, makeTraceable } from '../utils/langsmith.js';
 
 const textHash = (text) =>
   crypto.createHash('sha256').update(text.slice(0, 5000)).digest('hex');
 
-export const processDocument = async (docId, options = {}) => {
+export const processDocument = makeTraceable(async (docId, options = {}) => {
   const doc = await Document.findById(docId);
   if (!doc) throw new ApiError(404, 'Document not found');
 
@@ -118,7 +119,28 @@ export const processDocument = async (docId, options = {}) => {
     await doc.save();
     throw error;
   }
-};
+}, {
+  name: 'processDocument',
+  run_type: 'chain',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return {
+      documentId: args[0]?.toString(),
+      language: args[1]?.language,
+    };
+  },
+  processOutputs: (doc) => ({
+    documentId: doc._id?.toString(),
+    filename: doc.originalName,
+    category: doc.category,
+    status: doc.status,
+    processingStage: doc.processingStage,
+    chunkCount: doc.chunkCount,
+    vectorCount: doc.pineconeIds?.length || 0,
+    isDuplicate: doc.isDuplicate,
+    insightConfidence: doc.insights?.confidence,
+  }),
+});
 
 export const getDocumentReport = (doc) => {
   const lines = [

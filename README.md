@@ -69,11 +69,16 @@ PORT=5001
 MONGODB_URI=mongodb://localhost:27017/document_analyzer
 JWT_SECRET=your_secret_key_here
 GROQ_API_KEY=gsk_your_groq_key
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_your_langsmith_key
+LANGSMITH_PROJECT=multimodal-document-analyzer
 PINECONE_API_KEY=your_pinecone_key
 PINECONE_INDEX_NAME=document-analyzer
 PINECONE_DIMENSION=768
 FRONTEND_URL=http://localhost:5174
 ```
+
+LangSmith tracing is enabled when `LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` is set. If your LangSmith workspace is not in the default US region, also set `LANGSMITH_ENDPOINT` to your regional API endpoint. Large document text is previewed in traces by default; set `LANGSMITH_TRACE_FULL_INPUTS=true` only if you are comfortable sending full document prompts/content to LangSmith.
 
 ### 3. Frontend environment
 
@@ -190,6 +195,9 @@ JWT_SECRET=use_a_long_random_secret
 JWT_EXPIRES_IN=7d
 GROQ_API_KEY=gsk_your_groq_key
 GROQ_MODEL=llama-3.3-70b-versatile
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_your_langsmith_key
+LANGSMITH_PROJECT=multimodal-document-analyzer
 PINECONE_API_KEY=your_pinecone_key
 PINECONE_INDEX_NAME=document-analyzer
 PINECONE_DIMENSION=768

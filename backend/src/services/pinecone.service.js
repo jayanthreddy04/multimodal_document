@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getPineconeClient, getPineconeIndex, resolvePineconeIndexHost } from '../config/pinecone.js';
 import { generateEmbedding } from './embedding.service.js';
+import { getTraceArgs, makeTraceable, traceTextInput } from '../utils/langsmith.js';
 
 const isPineconeConfigured = () =>
   Boolean(process.env.PINECONE_API_KEY && process.env.PINECONE_INDEX_NAME);
@@ -20,7 +21,7 @@ const pineconeWarning = (action, err) => {
   }
 };
 
-export const upsertDocumentChunks = async (documentId, userId, chunks, metadata) => {
+export const upsertDocumentChunks = makeTraceable(async (documentId, userId, chunks, metadata) => {
   if (!isPineconeConfigured() || isPineconeSkipped() || !chunks?.length) {
     return [];
   }
@@ -60,9 +61,25 @@ export const upsertDocumentChunks = async (documentId, userId, chunks, metadata)
     pineconeWarning('Vector indexing', err);
     return [];
   }
-};
+}, {
+  name: 'upsertDocumentChunks',
+  run_type: 'tool',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return {
+      documentId: args[0],
+      userId: args[1]?.toString(),
+      chunkCount: args[2]?.length || 0,
+      metadata: args[3],
+    };
+  },
+  processOutputs: ({ outputs }) => ({
+    vectorCount: outputs?.length || 0,
+    vectorIds: outputs?.slice(0, 10) || [],
+  }),
+});
 
-export const semanticSearch = async (query, userId, topK = 10) => {
+export const semanticSearch = makeTraceable(async (query, userId, topK = 10) => {
   if (!isPineconeConfigured() || isPineconeSkipped()) {
     return { matches: [], fallback: true };
   }
@@ -94,7 +111,29 @@ export const semanticSearch = async (query, userId, topK = 10) => {
     pineconeWarning('Semantic search', err);
     return { matches: [], fallback: true };
   }
-};
+}, {
+  name: 'semanticSearch',
+  run_type: 'tool',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceTextInput(args[0], {
+      userId: args[1]?.toString(),
+      topK: args[2] || 10,
+    });
+  },
+  processOutputs: (outputs) => ({
+    matchCount: outputs.matches?.length || 0,
+    fallback: outputs.fallback,
+    matches: (outputs.matches || []).map((match) => ({
+      id: match.id,
+      score: match.score,
+      documentId: match.documentId,
+      filename: match.filename,
+      category: match.category,
+      chunkIndex: match.chunkIndex,
+    })),
+  }),
+});
 
 export const deleteDocumentVectors = async (pineconeIds) => {
   if (!isPineconeConfigured() || isPineconeSkipped() || !pineconeIds?.length) return;
@@ -107,14 +146,32 @@ export const deleteDocumentVectors = async (pineconeIds) => {
   }
 };
 
-export const findSimilarDocuments = async (text, userId, threshold = 0.85) => {
+export const findSimilarDocuments = makeTraceable(async (text, userId, threshold = 0.85) => {
   try {
     const result = await semanticSearch(text.slice(0, 500), userId, 5);
     return result.matches.filter((m) => m.score >= threshold);
   } catch {
     return [];
   }
-};
+}, {
+  name: 'findSimilarDocuments',
+  run_type: 'tool',
+  processInputs: (inputs) => {
+    const args = getTraceArgs(inputs);
+    return traceTextInput(args[0], {
+      userId: args[1]?.toString(),
+      threshold: args[2] || 0.85,
+    });
+  },
+  processOutputs: ({ outputs }) => ({
+    similarDocumentCount: outputs?.length || 0,
+    matches: (outputs || []).map((match) => ({
+      score: match.score,
+      documentId: match.documentId,
+      filename: match.filename,
+    })),
+  }),
+});
 
 export const ensurePineconeIndex = async () => {
   if (!isPineconeConfigured() || isPineconeSkipped()) return false;
